@@ -56,7 +56,7 @@ input[type=date]{max-width:110px}
 .cs{font-size:11px;color:var(--muted);margin-top:2px;margin-bottom:14px}
 
 /* KPI */
-.kpi-row{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px}
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:18px}
 .kpi{background:#fff;border:1px solid var(--border);border-radius:var(--radius);padding:20px 22px;box-shadow:var(--shadow);animation:fadeUp .3s ease both}
 .kpi:nth-child(2){animation-delay:.07s}.kpi:nth-child(3){animation-delay:.14s}
 .kpi-top{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:12px}
@@ -159,7 +159,7 @@ input[type=date]{max-width:110px}
       <div class="brand-name">NPP &middot; Permit Intelligence</div>
       <div class="brand-sub">Real-time permit and contractor insights</div>
     </div>
-    <div class="cov-badge"><span class="cov-dot"></span><span id="covPct">-- avg. coverage</span></div>
+
   </div>
   <div class="filters">
     <button onclick="clearFilters()" style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:6px 12px;font-family:var(--font);font-size:12px;font-weight:500;color:var(--muted);cursor:pointer;transition:all .15s" onmouseover="this.style.borderColor='var(--blue)';this.style.color='var(--blue)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">&#10005; Clear Filters</button>
@@ -215,6 +215,11 @@ input[type=date]{max-width:110px}
         <div class="kpi-val" id="kCtrs">--</div>
         <div class="kpi-lbl">Active Contractors</div>
       </div>
+      <div class="kpi">
+        <div class="kpi-top"><div class="kpi-icon ki-orange">&#128176;</div></div>
+        <div class="kpi-val" id="kAvgVal">--</div>
+        <div class="kpi-lbl">Avg Job Value</div>
+      </div>
 
     </div>
 
@@ -225,8 +230,8 @@ input[type=date]{max-width:110px}
         <canvas id="trendChart" height="210"></canvas>
       </div>
       <div class="card">
-        <div class="ct">Permit Type Breakdown</div>
-        <div class="cs">By tag category</div>
+        <div class="ct">Permit Status Breakdown</div>
+        <div class="cs">By status (from most recent 2,000 permits)</div>
         <div class="donut-wrap">
           <canvas id="donutChart" height="185" style="max-width:185px"></canvas>
           <div class="donut-center">
@@ -264,7 +269,7 @@ input[type=date]{max-width:110px}
     <div class="card">
       <div class="tbar">
         <div>
-          <div class="ct">Raw Permits &mdash; Most Recent 500</div>
+          <div class="ct">Permits</div>
           <div class="cs" id="permSub" style="margin-bottom:0">Loading...</div>
         </div>
         <div class="sbox">
@@ -287,12 +292,27 @@ input[type=date]{max-width:110px}
 
   <!-- CONTRACTORS -->
   <div class="tc" id="tab-contractors">
-    <div class="card" style="margin-bottom:16px">
-      <div class="ct">Top Contractors by Permit Volume</div>
-      <div class="cs">All jurisdictions combined (Top 20)</div>
-      <canvas id="ctrChartFull" height="320"></canvas>
+    <div class="card">
+      <div class="tbar">
+        <div>
+          <div class="ct">Active Contractors</div>
+          <div class="cs" id="ctrSub" style="margin-bottom:0">Loading...</div>
+        </div>
+        <div class="sbox">
+          <span style="color:var(--muted)">&#128269;</span>
+          <input type="text" id="ctrSearch" placeholder="Search contractor name..." oninput="renderContractorsTab()"/>
+        </div>
+      </div>
+      <div style="overflow-x:auto;max-height:560px;overflow-y:auto">
+        <table class="dt">
+          <thead><tr>
+            <th>#</th><th>Contractor</th><th>Permits</th>
+          </tr></thead>
+          <tbody id="ctrBody"></tbody>
+        </table>
+      </div>
+      <div class="pag" id="ctrPag"></div>
     </div>
-    <div class="ctr-grid" id="ctrCards"></div>
     <div id="ctrDrilldown" style="display:none;margin-top:16px">
       <div class="card">
         <div class="tbar">
@@ -325,6 +345,7 @@ const JIDS = ['hCWbRYlN-hU','hIgTve8Ld9s','hDVDRHv1kqI','hEXFDXGkSHQ','hKmSXivbb
 
 let allData=[], cMap={}, filteredData=[], charts={}, jTableData=[];
 let contractorDataForJurisdiction = null, lastJurisdictionFilter = '';
+let statusData = null;
 
 // ── FETCH ──
 async function sb(table, params, maxRows) {
@@ -335,7 +356,7 @@ async function sb(table, params, maxRows) {
     'Prefer': 'count=none'
   };
   maxRows = maxRows || 50000;
-  let out = [], from = 0, ps = 1000;
+  let out = [], from = 0, ps = 5000;
   while (out.length < maxRows) {
     const url = SB + '/rest/v1/' + table + '?' + params + '&offset=' + from + '&limit=' + ps;
     const r = await fetch(url, { headers });
@@ -369,15 +390,22 @@ async function loadData() {
     setMsg('Loading...');
 
     // Fetch all 3 views in parallel
-    const [monthly, summary, contractors, permitTagsData, rawPermitsData] = await Promise.all([
+    const [monthly, summary, contractors, permitTagsData, rawPermitsData, ahjList] = await Promise.all([
       sb('transform_permits_ahj_monthly_trend', 'select=*'),
       sb('transform_permits_ahj_summary', 'select=*'),
       sb('transformed_contractors_ca', 'select=id,business_name,permit_count&order=permit_count.desc', 2000),
       sb('clean_permit_tags', 'select=*'),
-      sb('clean_permits_ahj', 'select=id,start_date,jurisdiction,address_street_no,address_street,address_city,type,status,contractor_id,tags&order=start_date.desc', 2000)
+      sb('clean_permits_ahj', 'select=id,start_date,jurisdiction,address_street_no,address_street,address_city,type,status,contractor_id,tags,job_value&order=start_date.desc', 2000),
+      sb('clean_ahj_list', 'select=*')
     ]);
     rawPermits = rawPermitsData || [];
 
+    console.log('AHJ list sample:', JSON.stringify((ahjList||[]).slice(0,2)));
+    window.jNameMap = {};
+    (ahjList||[]).forEach(function(a) {
+      var key = a.shovels_jurisdiction_name || '';
+      if (key && a.jurisdiction_name) window.jNameMap[key.toUpperCase()] = a.jurisdiction_name;
+    });
     console.log('Monthly rows:', monthly.length, 'sample:', JSON.stringify(monthly[0]));
     console.log('Summary rows:', summary.length, 'sample:', JSON.stringify(summary[0]));
     console.log('Contractor rows:', contractors.length, 'sample:', JSON.stringify(contractors[0]));
@@ -423,18 +451,23 @@ async function loadData() {
 function setMsg(m) { document.getElementById('lmsg').textContent = m; }
 
 function populateFilters() {
-  const jurs = [...new Set(allData.map(d => d.jurisdiction).filter(Boolean))].sort();
+  const jurs = [...new Set(allData.map(d => d.jurisdiction).filter(Boolean))]
+    .sort(function(a, b) {
+      const na = (window.jNameMap && window.jNameMap[a.toUpperCase()]) || a;
+      const nb = (window.jNameMap && window.jNameMap[b.toUpperCase()]) || b;
+      return na.localeCompare(nb);
+    });
   const jSel = document.getElementById('jFilter');
   jurs.forEach(j => {
     const o = document.createElement('option');
     o.value = j;
-    o.textContent = capFirstWord(j);
+    o.textContent = (window.jNameMap && window.jNameMap[j.toUpperCase()]) || capFirstWord(j);
     jSel.appendChild(o);
   });
   // Build contractor search list
   const ctrSrc = (window.contractorData && window.contractorData.length) ? window.contractorData.slice() : [];
   ctrSrc.sort((a,b) => (b.permit_count||0) - (a.permit_count||0));
-  window.allContractors = ctrSrc.map(d => ({ id: d.id || d.contractor_id || '', name: capFirstWord(d.business_name || d.id || '-') })).filter(d => d.id);
+  window.allContractors = ctrSrc.map(d => ({ id: d.id || d.contractor_id || '', name: d.business_name || d.id || '-' })).filter(d => d.id);
 }
 
 async function loadJurisdictionContractors(jurisdiction) {
@@ -480,6 +513,34 @@ async function loadJurisdictionContractors(jurisdiction) {
     renderCtrChart();
     renderContractorsTab();
   }
+}
+
+async function fetchStatusData() {
+  const j  = document.getElementById('jFilter').value;
+  const c  = document.getElementById('cFilterId').value;
+  const t  = getSelectedTags();
+  const df = document.getElementById('dFrom').value;
+  const dt = document.getElementById('dTo').value;
+  let params = 'select=status';
+  if (j) params += '&jurisdiction=eq.' + encodeURIComponent(j);
+  if (c) params += '&contractor_id=eq.' + encodeURIComponent(c);
+  if (df) params += '&start_date=gte.' + df;
+  if (dt) params += '&start_date=lte.' + dt;
+  if (t.length === 1) params += '&tags=ilike.*' + encodeURIComponent(t[0]) + '*';
+  else if (t.length > 1) params += '&or=(' + t.map(function(tag){ return 'tags.ilike.*' + encodeURIComponent(tag) + '*'; }).join(',') + ')';
+  try {
+    const data = await sb('clean_permits_ahj', params, 100000);
+    const cats = {};
+    data.forEach(function(r) {
+      const s = r.status ? r.status.toLowerCase() : 'unknown';
+      cats[s] = (cats[s] || 0) + 1;
+    });
+    statusData = cats;
+  } catch(e) {
+    console.warn('Status fetch failed:', e);
+    statusData = null;
+  }
+  renderDonut();
 }
 
 var ctrDDActiveIdx = -1;
@@ -569,6 +630,8 @@ function applyFilters() {
     loadJurisdictionContractors(j);
   }
   renderAll();
+  statusData = null;
+  fetchStatusData();
 }
 
 function getSelectedTags(){return Array.from(document.querySelectorAll('#tagDDMenu input[type=checkbox]:checked')).map(function(cb){return cb.value;});}
@@ -599,9 +662,18 @@ function renderKPIs() {
     : new Set(filteredData.map(d => d.jurisdiction_id).filter(Boolean)).size;
   const totalActiveMonths = sumSrc.reduce((a, d) => a + (d.active_months || 0), 0);
   const cov = jurs > 0 ? Math.min(100, Math.round((totalActiveMonths / (jurs * 60)) * 100)) : 0;
+  const valPermits = rawPermits.filter(function(r) {
+    if (j && (r.jurisdiction||'').toUpperCase() !== j.toUpperCase()) return false;
+    const c2 = document.getElementById('cFilterId').value;
+    if (c2 && r.contractor_id !== c2) return false;
+    const t2 = getSelectedTags();
+    if (t2.length && !permitHasTag(r.tags, t2)) return false;
+    return r.job_value > 0;
+  });
+  const avgVal = valPermits.length ? valPermits.reduce(function(a,r){ return a + (r.job_value||0); }, 0) / valPermits.length / 100 : 0;
   g('kTotal').textContent = total.toLocaleString();
   g('kCtrs').textContent = ctrs.toLocaleString();
-  g('covPct').textContent = cov + '% avg. coverage';
+  g('kAvgVal').textContent = avgVal > 0 ? '$' + Math.round(avgVal).toLocaleString() : '--';
 }
 
 function renderTrend() {
@@ -684,20 +756,30 @@ function renderTrend() {
 }
 
 function renderDonut() {
-  const cats = { 'Solar/Battery':0, 'HVAC':0, 'Electrical':0, 'Plumbing':0, 'Remodel':0, 'New Const.':0, 'Other':0 };
-  filteredData.forEach(d => {
-    const s = (d.tags||'').toLowerCase();
-    if (s.includes('solar')||s.includes('battery')) cats['Solar/Battery']++;
-    else if (s.includes('hvac')) cats['HVAC']++;
-    else if (s.includes('electric')||s.includes('ev_charger')) cats['Electrical']++;
-    else if (s.includes('plumbing')||s.includes('gas')) cats['Plumbing']++;
-    else if (s.includes('remodel')||s.includes('kitchen')) cats['Remodel']++;
-    else if (s.includes('new_construction')) cats['New Const.']++;
-    else cats['Other']++;
-  });
-  const lbls = Object.keys(cats).filter(k => cats[k] > 0), vals = lbls.map(k => cats[k]);
-  const colors = ['#3b73f5','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#94a3b8'];
-  const total = vals.reduce((a,b) => a+b, 0);
+  const cats = statusData || (function() {
+    const j  = document.getElementById('jFilter').value;
+    const c  = document.getElementById('cFilterId').value;
+    const t  = getSelectedTags();
+    const df = document.getElementById('dFrom').value;
+    const dt = document.getElementById('dTo').value;
+    const tmp = {};
+    rawPermits.filter(function(r) {
+      if (j && (r.jurisdiction||'').toUpperCase() !== j.toUpperCase()) return false;
+      if (c && r.contractor_id !== c) return false;
+      if (t.length && !permitHasTag(r.tags, t)) return false;
+      if (df && r.start_date && r.start_date < df) return false;
+      if (dt && r.start_date && r.start_date > dt) return false;
+      return true;
+    }).forEach(function(r) {
+      const s = r.status ? r.status.toLowerCase() : 'unknown';
+      tmp[s] = (tmp[s] || 0) + 1;
+    });
+    return tmp;
+  })();
+  const lbls = Object.keys(cats).sort(function(a,b){ return cats[b]-cats[a]; });
+  const vals = lbls.map(function(k){ return cats[k]; });
+  const colors = ['#3b73f5','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#94a3b8','#ec4899','#14b8a6'];
+  const total = vals.reduce(function(a,b){ return a+b; }, 0);
   const ctx = g('donutChart').getContext('2d');
   if (charts.donut) charts.donut.destroy();
   charts.donut = new Chart(ctx, {
@@ -706,7 +788,7 @@ function renderDonut() {
     options: { responsive: true, cutout: '68%', plugins: { legend: { display: false }, tooltip: tt() } }
   });
   g('donutVal').textContent = total.toLocaleString();
-  g('donutLegend').innerHTML = lbls.map((l,i) => {
+  g('donutLegend').innerHTML = lbls.map(function(l,i) {
     const p = total > 0 ? Math.round((vals[i]/total)*100) : 0;
     return '<div class="dl-item"><div class="dl-dot" style="background:' + colors[i] + '"></div>' + l + ' (' + p + '%)</div>';
   }).join('');
@@ -732,10 +814,11 @@ function renderCtrChart() {
 }
 
 function renderHeatmap() {
+  const hmSrc = allData;
   const m = {};
-  filteredData.forEach(d => { if (!d.start_date||!d.jurisdiction_id) return; const k = d.jurisdiction_id+'||'+d.start_date.slice(0,7); m[k] = (m[k]||0)+1; });
+  hmSrc.forEach(d => { if (!d.start_date||!d.jurisdiction_id) return; const k = d.jurisdiction_id+'||'+d.start_date.slice(0,7); m[k] = (m[k]||0)+1; });
   const jCnt = {};
-  filteredData.forEach(d => { if (d.jurisdiction_id) jCnt[d.jurisdiction_id] = (jCnt[d.jurisdiction_id]||0)+1; });
+  hmSrc.forEach(d => { if (d.jurisdiction_id) jCnt[d.jurisdiction_id] = (jCnt[d.jurisdiction_id]||0)+1; });
   const topJ = Object.entries(jCnt).sort((a,b) => b[1]-a[1]).slice(0,10);
   const months = [];
   const now = new Date(); now.setDate(1);
@@ -743,7 +826,7 @@ function renderHeatmap() {
   const maxVal = Math.max(...topJ.flatMap(([jid]) => months.map(mo => m[jid+'||'+mo]||0)), 1);
   const hm = g('heatmap'); hm.innerHTML = '';
   topJ.forEach(([jid]) => {
-    const name = (filteredData.find(d => d.jurisdiction_id===jid)||{}).jurisdiction || jid;
+    const name = (allData.find(d => d.jurisdiction_id===jid)||{}).jurisdiction || jid;
     const dname = capFirstWord(name);
     const row = document.createElement('div'); row.className = 'hm-row';
     row.innerHTML = '<div class="hm-lbl" title="' + dname + '">' + (dname.length > 11 ? dname.slice(0,10)+'...' : dname) + '</div>';
@@ -760,7 +843,8 @@ function renderHeatmap() {
 
 function hlvl(v, max) { if (!v) return 0; const p = v/max; if (p<0.2) return 1; if (p<0.4) return 2; if (p<0.7) return 3; return 4; }
 
-let rawPermits = [], permPage = 0;
+let rawPermits = [], tablePermits = [], permPage = 0;
+const MAX_PERMITS = 1000;
 const PERM_PAGE_SIZE = 50;
 
 async function loadRawPermits() {
@@ -768,7 +852,7 @@ async function loadRawPermits() {
   const idList = JIDS.join(',');
   try {
     rawPermits = await sb('clean_permits_ahj',
-      'select=id,start_date,jurisdiction,address_street_no,address_street,address_city,type,status,contractor_id,tags&order=start_date.desc',
+      'select=id,start_date,jurisdiction,address_street_no,address_street,address_city,type,status,contractor_id,tags,job_value&order=start_date.desc',
       500);
     console.log('Raw permits loaded:', rawPermits.length, 'tags sample:', JSON.stringify(rawPermits.slice(0,3).map(r=>r.tags)));
     filterPermitsTable();
@@ -777,6 +861,30 @@ async function loadRawPermits() {
     console.error(e);
   }
 }
+
+async function fetchPermitsForTab() {
+  const j  = document.getElementById('jFilter').value;
+  const c  = document.getElementById('cFilterId').value;
+  const t  = getSelectedTags();
+  const df = document.getElementById('dFrom').value;
+  const dt = document.getElementById('dTo').value;
+  g('permSub').textContent = 'Loading...';
+  let params = 'select=id,start_date,jurisdiction,address_street_no,address_street,address_city,type,status,contractor_id,tags,job_value&order=start_date.desc';
+  if (j) params += '&jurisdiction=eq.' + encodeURIComponent(j);
+  if (c) params += '&contractor_id=eq.' + encodeURIComponent(c);
+  if (df) params += '&start_date=gte.' + df;
+  if (dt) params += '&start_date=lte.' + dt;
+  if (t.length === 1) params += '&tags=ilike.*' + encodeURIComponent(t[0]) + '*';
+  else if (t.length > 1) params += '&or=(' + t.map(function(tag){ return 'tags.ilike.*' + encodeURIComponent(tag) + '*'; }).join(',') + ')';
+  try {
+    tablePermits = await sb('clean_permits_ahj', params, MAX_PERMITS);
+    filterPermitsTable(true);
+  } catch(e) {
+    g('permSub').textContent = 'Error: ' + e.message;
+    console.error(e);
+  }
+}
+function isPermitsTabActive() { return document.getElementById('tab-permits').classList.contains('active'); }
 
 function filterPermitsTable(resetPage) {
   if (resetPage) permPage = 0;
@@ -787,7 +895,8 @@ function filterPermitsTable(resetPage) {
   const df = document.getElementById('dFrom').value;
   const dt = document.getElementById('dTo').value;
   console.log('filterPermitsTable t=', t, 'sample tags:', rawPermits.slice(0,3).map(r=>r.tags));
-  const rows = rawPermits.filter(r => {
+  const src = tablePermits.length ? tablePermits : rawPermits;
+  const rows = src.filter(r => {
     if (q && !(r.jurisdiction||'').toLowerCase().includes(q) &&
              !(r.address_street||'').toLowerCase().includes(q) &&
              !(r.address_city||'').toLowerCase().includes(q)) return false;
@@ -803,8 +912,9 @@ function filterPermitsTable(resetPage) {
   const pageRows = rows.slice(permPage * PERM_PAGE_SIZE, (permPage + 1) * PERM_PAGE_SIZE);
   const start = rows.length ? permPage * PERM_PAGE_SIZE + 1 : 0;
   const end = Math.min((permPage + 1) * PERM_PAGE_SIZE, rows.length);
+  const capNote = rows.length >= MAX_PERMITS ? ' (max 1,000 shown — use filters to narrow)' : '';
   g('permSub').textContent = rows.length
-    ? 'Showing ' + start + '–' + end + ' of ' + rows.length.toLocaleString() + ' permits'
+    ? 'Showing ' + start + '–' + end + ' of ' + rows.length.toLocaleString() + ' permits' + capNote
     : 'No permits match current filters';
   g('pBody').innerHTML = pageRows.map(r => {
     const addr = [r.address_street_no, r.address_street, r.address_city].filter(Boolean).join(' ');
@@ -825,35 +935,46 @@ function filterPermitsTable(resetPage) {
   pag.innerHTML = '<span class="pag-info">Page ' + (permPage+1) + ' of ' + totalPages + '</span><div class="pag-btns">' + btns + '</div>';
 }
 function setPermPage(n) { permPage = n; filterPermitsTable(); }
-function renderPermitsTable() { filterPermitsTable(true); }
+function renderPermitsTable() { if (isPermitsTabActive()) { fetchPermitsForTab(); } }
 
 function renderContractorsTab() {
   const src = (contractorDataForJurisdiction !== null ? contractorDataForJurisdiction : (window.contractorData || []));
-  const top20 = src.slice(0,20);
-  const lbls = top20.map(d => { const n = d.business_name||d.id||'?'; return n.length>30?n.slice(0,28)+'...':n; });
-  const vals = top20.map(d => d.permit_count || 0);
-  const ctx = g('ctrChartFull').getContext('2d');
-  if (charts.ctrFull) charts.ctrFull.destroy();
-  charts.ctrFull = new Chart(ctx, {
-    type: 'bar',
-    data: { labels: lbls, datasets: [{ data: vals, backgroundColor: '#bfcffd', hoverBackgroundColor: '#3b73f5', borderRadius: 4 }] },
-    options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false }, tooltip: tt() },
-      scales: {
-        x: { grid: { color: '#f0f1f7' }, ticks: { color: '#9ca3af', font: { size: 10 } } },
-        y: { grid: { display: false }, ticks: { color: '#374151', font: { family: 'Plus Jakarta Sans', size: 11 } } }
-      }
-    }
-  });
-  g('ctrCards').innerHTML = top20.map((d, i) => {
+  const q = (document.getElementById('ctrSearch') ? document.getElementById('ctrSearch').value : '').toLowerCase();
+  const filtered = q ? src.filter(function(d) { return (d.business_name||'').toLowerCase().includes(q); }) : src;
+  const PAGE = 50;
+  if (typeof window.ctrPage === 'undefined') window.ctrPage = 0;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE));
+  if (window.ctrPage >= totalPages) window.ctrPage = totalPages - 1;
+  const pageRows = filtered.slice(window.ctrPage * PAGE, (window.ctrPage + 1) * PAGE);
+  const start = filtered.length ? window.ctrPage * PAGE + 1 : 0;
+  const end = Math.min((window.ctrPage + 1) * PAGE, filtered.length);
+  if (g('ctrSub')) g('ctrSub').textContent = filtered.length ? 'Showing ' + start + '–' + end + ' of ' + filtered.length.toLocaleString() + ' contractors' : 'No contractors found';
+  if (g('ctrBody')) g('ctrBody').innerHTML = pageRows.map(function(d, i) {
+    const rank = window.ctrPage * PAGE + i + 1;
     const name = d.business_name || d.contractor_id || '?';
-    const count = d.permit_count || 0;
-    const ini = name.split(' ').slice(0,2).map(w => w[0]||'').join('').toUpperCase().slice(0,2) || '??';
-    const jcount = d.jurisdiction_count || 0;
-    const safeId = (d.contractor_id||'').replace(/"/g,'&quot;');
-    const safeName = name.replace(/"/g,'&quot;');
-    return '<div class="ctr-card" style="animation-delay:' + (i*0.025) + 's;cursor:pointer" data-cid="' + safeId + '" data-name="' + safeName + '" onclick="drillContractor(this)"><div class="ctr-av">' + ini + '</div><div><div class="ctr-name">' + (name.length>28?name.slice(0,26)+'...':name) + '</div><div class="ctr-cnt">' + count.toLocaleString() + ' permits &middot; ' + jcount + ' jurisdictions</div></div><div style="margin-left:auto;color:var(--blue);font-size:11px">View &#8250;</div></div>';
-  }).join('');
+    const count = (d.permit_count || 0).toLocaleString();
+    const safeId = (d.contractor_id || d.id || '').replace(/"/g, '&quot;');
+    const safeName = name.replace(/"/g, '&quot;');
+    return '<tr style="cursor:pointer" onclick="drillContractor(this)" data-cid="' + safeId + '" data-name="' + safeName + '">' +
+      '<td style="color:var(--muted);width:40px">' + rank + '</td>' +
+      '<td><strong>' + name + '</strong></td>' +
+      '<td style="white-space:nowrap">' + count + '</td>' +
+      '</tr>';
+  }).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--muted);padding:24px">No contractors found</td></tr>';
+  const pag = g('ctrPag');
+  if (!pag) return;
+  let btns = '';
+  btns += '<button class="pag-btn" onclick="setCtrPage(' + (window.ctrPage-1) + ')" ' + (window.ctrPage===0?'disabled':'') + '>&lsaquo; Prev</button>';
+  let startP = Math.max(0, window.ctrPage-3), endP = Math.min(totalPages, startP+7);
+  if (endP-startP < 7) startP = Math.max(0, endP-7);
+  for (var i = startP; i < endP; i++) {
+    btns += '<button class="pag-btn' + (i===window.ctrPage?' active':'') + '" onclick="setCtrPage('+i+')">' + (i+1) + '</button>';
+  }
+  btns += '<button class="pag-btn" onclick="setCtrPage(' + (window.ctrPage+1) + ')" ' + (window.ctrPage>=totalPages-1?'disabled':'') + '>Next &rsaquo;</button>';
+  pag.innerHTML = '<span class="pag-info">Page ' + (window.ctrPage+1) + ' of ' + totalPages + '</span><div class="pag-btns">' + btns + '</div>';
 }
+function setCtrPage(n) { window.ctrPage = n; renderContractorsTab(); }
+
 
 async function drillContractor(el) {
   const cid = el.dataset.cid;
@@ -887,7 +1008,7 @@ function switchTab(id, el) {
   el.classList.add('active');
   g('tab-'+id).classList.add('active');
   if (id === 'contractors') setTimeout(() => renderContractorsTab(), 50);
-  if (id === 'permits') { if (!rawPermits.length) loadRawPermits(); else filterPermitsTable(); }
+  if (id === 'permits') { fetchPermitsForTab(); }
 }
 
 function tt() {
